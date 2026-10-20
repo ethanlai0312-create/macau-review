@@ -1,0 +1,3 @@
+project_id = "macau-review"
+[functions.exam]
+verify_jwt = false
