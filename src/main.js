@@ -14,6 +14,8 @@ let token=sessionStorage.getItem('macau-token')||'',account='',attempt=null,ques
 let page=token?'restoring':'login',notice='',pending=null,dirty=false,saveBusy=false,submitBusy=false,conflict=false;
 let board=[],boardSynced='',boardError=false,result=null,review=[],history=[],onlyWrong=false;
 let serverAnchor=0,monoAnchor=0,saveTimer;
+let practiceBank='',practiceMarks={},practiceBusy=false;
+const practicing=()=>page==='practice'||page==='practice-result';
 const key=()=>`macau-draft:${account}:${attempt?.id}`;
 function message(code) { return ({
   LOGIN:'账号或密码不正确，请重新输入。',RATE_LIMIT:'尝试次数过多，请在15分钟后再试。',
@@ -49,6 +51,7 @@ function elapsed() {
 }
 function count() {return questions.filter(q=>answered(answers[q.id])).length;}
 function persist() {
+  if(practicing()) {try {localStorage.setItem('macau-practice',JSON.stringify({bank:practiceBank,answers,current,marks:practiceMarks}));}catch(_){} return;}
   if(!attempt) return;
   try {localStorage.setItem(key(),JSON.stringify({answers,current,revision:attempt.revision,pending,dirty}));}
   catch (_) {notice='浏览器本地存储不可用，请保持联网，确认云端保存成功后再离开。';}
@@ -87,10 +90,13 @@ function updateProgress() {
   if($('#save-state')) $('#save-state').textContent=lang==='zh-TW'?convert(notice|| (dirty?'正在保存…':'已保存至云端')):(notice||(dirty?'正在保存…':'已保存至云端'));
   document.querySelectorAll('[data-jump]').forEach(b=>b.classList.toggle('answered',answered(answers[questions[Number(b.dataset.jump)]?.id])));
 }
-function changeAnswer(value) {if(pending||conflict||submitBusy)return;answers[questions[current].id]=value;dirty=true;persist();updateProgress();scheduleSave();}
+function changeAnswer(value) {
+ if(practicing()){if(practiceBusy||practiceMarks[questions[current].id])return;answers[questions[current].id]=value;persist();return;}
+ if(pending||conflict||submitBusy)return;answers[questions[current].id]=value;dirty=true;persist();updateProgress();scheduleSave();
+}
 function header() {
   return `<header><a href="#" class="brand" data-action="home"><span class="brand-icon">澳</span><span>${T('知澳')}<small>MACAU STUDY ROOM</small></span></a>
-  <nav><button class="language" data-action="language" aria-label="${T('切换简体与繁体')}">${lang==='zh-CN'?'繁體':'简体'}</button>
+  <nav>${page==='login'?`<button class="practice-entry" data-action="practice-start">${T('练习模式')}</button>`:''}${practicing()?`<button class="quiet" data-action="practice-exit">${T('返回登录')}</button>`:''}<button class="language" data-action="language" aria-label="${T('切换简体与繁体')}">${lang==='zh-CN'?'繁體':'简体'}</button>
   ${account&&token?`<span class="account">${T('账号')} ${esc(account)}</span><button class="quiet" data-action="logout">${T('退出')}</button>`:''}</nav></header>`;
 }
 function login() {
@@ -105,8 +111,9 @@ function login() {
 }
 const typeNames={single:'单项选择',multi:'多项选择',boolean:'判断',text:'填空',number:'数值计算',match:'配对',order:'排序'};
 function inputs(q) {
-  const c=content(q),value=answers[q.id],disabled=pending||conflict?'disabled':'';
-  if(['single','boolean','multi'].includes(q.type)) return `<div class="choices">${c.options.map((o,i)=>`<label class="choice ${q.type==='multi'?(value||[]).includes(String(i))?'selected':'':value===String(i)?'selected':''}">
+  const c=content(q),value=answers[q.id],mark=practicing()?practiceMarks[q.id]:null,disabled=pending||conflict||mark||practiceBusy?'disabled':'';
+  const feedbackClass=i=>!mark?'':(Array.isArray(mark.question.answer)?mark.question.answer:[mark.question.answer]).includes(String(i))?'practice-correct':(Array.isArray(value)?value:[value]).includes(String(i))?'practice-incorrect':'';
+  if(['single','boolean','multi'].includes(q.type)) return `<div class="choices">${c.options.map((o,i)=>`<label class="choice ${feedbackClass(i)} ${q.type==='multi'?(value||[]).includes(String(i))?'selected':'':value===String(i)?'selected':''}">
     <input ${disabled} type="${q.type==='multi'?'checkbox':'radio'}" name="option" value="${i}" ${q.type==='multi'?(value||[]).includes(String(i))?'checked':'':value===String(i)?'checked':''}>
     <span class="choice-letter">${String.fromCharCode(65+i)}</span><span>${esc(o)}</span></label>`).join('')}</div>`;
   if(q.type==='text'||q.type==='number') return `<label class="answer-label" for="answer">${T(q.type==='number'?'输入数值（按题目要求，不附加单位）':'输入答案（简体、繁体均可）')}</label><input ${disabled} id="answer" maxlength="200" autocomplete="off" inputmode="${q.type==='number'?'decimal':'text'}" value="${esc(value||'')}" placeholder="${T('在此作答')}">`;
@@ -159,6 +166,29 @@ function readableAnswer(q,value) {
  if(q.type==='match') return Object.entries(value).map(([i,v])=>`${esc(q.left[lang==='zh-TW'?'tw':'cn'][Number(i)])} → ${esc(c.options[Number(v)]||'—')}`).join('；');
  return (Array.isArray(value)?value:[value]).map(v=>esc(c.options[Number(v)]||'—')).join(q.type==='order'?' → ':'；');
 }
+async function startPractice(reset=false) {
+ if(token)return;
+ const data=await api('practice');
+ let saved=null;try{saved=JSON.parse(localStorage.getItem('macau-practice'));}catch(_){}
+ practiceBank=data.bank;questions=data.questions;attempt=null;pending=null;conflict=false;dirty=false;notice='';
+ const resume=!reset&&saved?.bank===practiceBank;
+ answers=resume?saved.answers||{}:{};practiceMarks=resume?saved.marks||{}:{};
+ current=resume?Math.max(0,Math.min(99,Number(saved.current)||0)):0;
+ page='practice';persist();render();
+}
+function practicePage() {
+ const q=questions[current],mark=practiceMarks[q.id],done=Object.keys(practiceMarks).length;
+ return `<main class="workspace practice-workspace"><section class="exam-overview"><div><div class="eyebrow">${T('无需登录 · 不计入排行榜')}</div><h1>${T('练习模式')}</h1></div><div class="progress-block"><span>${T('已练习')} <b>${done} / 100</b></span><progress max="100" value="${done}"></progress></div></section>
+ <div class="exam-grid"><section class="question-card"><div class="question-meta"><span>${T(q.topic)}</span><span>${T(typeNames[q.type])}</span></div><div class="question-number">${String(current+1).padStart(2,'0')} <span>/ 100</span></div><h2>${esc(content(q).prompt)}</h2>${q.type==='multi'?`<p class="rule">${T('全部选对才得分，漏选或错选均不得分。')}</p>`:''}${q.diagram?diagram(q.diagram,T):''}
+ <fieldset ${mark||practiceBusy?'disabled':''}><legend class="sr-only">${T('作答区域')}</legend>${inputs(q)}</fieldset>
+ ${mark?`<section class="practice-feedback ${mark.correct?'is-correct':'is-incorrect'}" role="status"><strong>${T(mark.correct?'回答正确':'回答错误')}</strong><p class="correct-answer">${T('正确答案')}：${readableAnswer(mark.question,mark.question.answer)}</p><p>${esc(content(mark.question).explanation)}</p></section>`:`<p class="muted">${T('点击继续，检查本题并查看答案。未作答也可以查看答案。')}</p>`}
+ <div class="question-controls"><button data-action="previous" ${current===0||practiceBusy?'disabled':''}>← ${T('上一题')}</button><button class="quiet" data-action="practice-clear" ${mark||practiceBusy?'disabled':''}>${T('清除答案')}</button><button class="primary" data-action="practice-continue" ${practiceBusy?'disabled':''}>${T(practiceBusy?'正在判题…':!mark?'继续':current===99?'查看练习结果':'下一题')} →</button></div><p class="save-state" role="status">${T(notice||'练习进度仅保存在当前浏览器。')}</p></section>
+ <aside class="navigator"><div class="aside-heading"><h2>${T('题目导航')}</h2><span>${T('可跳题')}</span></div><div class="number-grid">${questions.map((v,i)=>`<button data-jump="${i}" ${practiceBusy?'disabled':''} class="${i===current?'current ':''}${practiceMarks[v.id]?(practiceMarks[v.id].correct?'practice-correct':'practice-incorrect'):''}" aria-label="${T('第')} ${i+1} ${T('题')}">${i+1}</button>`).join('')}</div><p class="muted">${T('绿色表示答对，红色表示答错。')}</p><button class="full quiet" data-action="practice-summary">${T('查看练习结果')}</button></aside></div></main>`;
+}
+function practiceResult() {
+ const marks=Object.values(practiceMarks),correct=marks.filter(m=>m.correct).length;
+ return `<main class="results panel"><div class="eyebrow">${T('练习模式 · 不计入排行榜')}</div><h1>${T('本轮练习结果')}</h1><div class="result-stats"><div><strong>${correct}</strong><span>${T('正确')}</span></div><div><strong>${marks.length-correct}</strong><span>${T('错误')}</span></div><div><strong>${100-marks.length}</strong><span>${T('未练习')}</span></div></div><div class="actions"><button class="primary" data-action="practice-resume">${T('返回练习')}</button><button data-action="practice-restart">${T('重新练习全部题目')}</button><button data-action="practice-exit">${T('返回登录')}</button></div></main>`;
+}
 function reviewPage() {
  return `<main class="results"><section class="panel"><div class="section-heading"><h1>${T('复盘这次练习')}</h1><button data-action="result">${T('返回成绩')}</button></div><label class="filter"><input type="checkbox" id="wrong-only" ${onlyWrong?'checked':''}>${T('只看错题与未答题')}</label>
  ${review.filter(q=>!onlyWrong||!result.grading.find(g=>g.id===q.id)?.correct).map(q=>{const g=result.grading.find(v=>v.id===q.id);return `<article class="review-item"><span class="badge ${g.correct?'correct':'incorrect'}">${T(g.correct?'正确':g.answered?'错误':'未答')} · ${q.id}</span><h2>${esc(content(q).prompt)}</h2>${q.diagram?diagram(q.diagram,T):''}<p>${T('我的答案')}：${readableAnswer(q,result.answers[q.id])}</p><p class="correct-answer">${T('标准答案')}：${readableAnswer(q,q.answer)}</p><p class="explanation">${esc(content(q).explanation)}</p></article>`;}).join('')}</section></main>`;
@@ -167,7 +197,7 @@ async function loadHistory() {try {history=(await api('history')).rows;render();
 function historyPage() {return `<main class="results panel"><div class="section-heading"><h1>${T('历史练习')}</h1><button data-action="${attempt?'exam':'start'}">${T(attempt?'继续答题':'开始新练习')}</button></div>${history.map(r=>`<button class="history-row" data-review-id="${r.id}"><span>${new Date(r.submitted_at).toLocaleString(lang)}</span><strong>${r.score} / 100</strong><time>${formatTime(r.elapsed_seconds*1000)}</time><span>→</span></button>`).join('')||`<p class="empty">${T('还没有已提交的练习记录。')}</p>`}</main>`;}
 function render() {
  document.documentElement.lang=lang;document.title=lang==='zh-TW'?'知澳 · 澳門複習室':'知澳 · 澳门复习室';
- root.innerHTML=header()+(page==='restoring'?`<main class="results panel"><h2>${T('正在恢复你的练习…')}</h2><p>${T('正在读取云端进度与计时，请稍候。')}</p><button data-action="reload">${T('重试连接')}</button></main>`:page==='login'?login():page==='exam'?exam():page==='result'?resultPage():page==='review'?reviewPage():page==='history'?historyPage():`<main class="results"><button class="back" data-action="${attempt?'exam':'history'}">← ${T(attempt?'继续答题':'历史练习')}</button>${leaderboard()}</main>`)+
+ root.innerHTML=header()+(page==='practice'?practicePage():page==='practice-result'?practiceResult():page==='restoring'?`<main class="results panel"><h2>${T('正在恢复你的练习…')}</h2><p>${T('正在读取云端进度与计时，请稍候。')}</p><button data-action="reload">${T('重试连接')}</button></main>`:page==='login'?login():page==='exam'?exam():page==='result'?resultPage():page==='review'?reviewPage():page==='history'?historyPage():`<main class="results"><button class="back" data-action="${attempt?'exam':'history'}">← ${T(attempt?'继续答题':'历史练习')}</button>${leaderboard()}</main>`)+
  `${notice&&page!=='login'&&page!=='exam'?`<div class="toast" role="alert">${T(notice)}</div>`:''}<footer>${T('知澳 · 城市与生活的知识地图')}</footer><dialog id="submit-dialog"><h2>${T('准备好交卷了吗？')}</h2><p>${T('已答')} ${count()} ${T('题，未答')} ${100-count()} ${T('题。未答题计0分；交卷后不能修改。')}</p><p class="muted">${T('确认后冻结本机计时。若断网，最终用时以服务器首次接收为准。')}</p><div class="actions"><button data-action="cancel">${T('返回继续答题')}</button><button class="primary" data-action="submit">${T('确认交卷')}</button></div></dialog>`;
 }
 async function submit() {
@@ -213,6 +243,21 @@ root.addEventListener('click',async event=>{
  try {
  if(button.dataset.reviewId) {const data=await api('review',{id:button.dataset.reviewId});result=data.attempt;review=data.questions;page='review';render();return;}
  switch(button.dataset.action){
+ case 'practice-start':button.disabled=true;try{await startPractice();}finally{button.disabled=false;}break;
+ case 'practice-continue':{
+   const q=questions[current];
+   if(practiceMarks[q.id]){if(current===99)page='practice-result';else current++;persist();render();$('.question-card')?.scrollIntoView({block:'start'});break;}
+   practiceBusy=true;notice='';render();
+   try{const data=await api('practice-check',{bank:practiceBank,id:q.id,answer:answers[q.id]??null});practiceMarks[q.id]=data;persist();}
+   catch(error){notice=message(error.code);}
+   finally{practiceBusy=false;render();}
+   break;
+ }
+ case 'practice-clear':if(!practiceMarks[questions[current].id]){delete answers[questions[current].id];persist();render();}break;
+ case 'practice-summary':page='practice-result';persist();render();break;
+ case 'practice-resume':page='practice';render();break;
+ case 'practice-restart':button.disabled=true;try{await startPractice(true);}finally{button.disabled=false;}break;
+ case 'practice-exit':persist();page='login';answers={};questions=[];current=0;notice='';render();break;
  case 'language':{
    const loginAccount=$('#account')?.value,loginPassword=$('#password')?.value;
    lang=lang==='zh-CN'?'zh-TW':'zh-CN';localStorage.setItem('macau-language',lang);render();
@@ -263,3 +308,4 @@ window.addEventListener('online',()=>{if(pending&&token)submit();else if(dirty)s
 window.addEventListener('pagehide',persist);
 render();
 if(token) api('state').then(restore).catch(fail);
+
