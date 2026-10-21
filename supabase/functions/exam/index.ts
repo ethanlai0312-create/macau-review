@@ -9,7 +9,8 @@ Deno.serve(createHandler({
   allowedOrigins:origins, ipSecret,
   getIP:(req:Request) => req.headers.get('x-forwarded-for')?.split(',')[0].trim() || 'unknown',
   rpc:async (action:string,token:string,payload:unknown) => {
-    const response = await fetch(`${url}/rest/v1/rpc/exam_api`,{
+    const endpoint = ['practice','practice-check'].includes(action) ? 'practice_api' : 'exam_api';
+    const response = await fetch(`${url}/rest/v1/rpc/${endpoint}`,{
       method:'POST',headers:{apikey:key,Authorization:`Bearer ${key}`,'Content-Type':'application/json'},
       body:JSON.stringify({p_action:action,p_token:token,p_payload:payload})
     });
