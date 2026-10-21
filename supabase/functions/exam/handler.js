@@ -19,6 +19,11 @@ export function createHandler({rpc, allowedOrigins, ipSecret, getIP}) {
       const body = JSON.parse(text);
       if (!body || typeof body !== 'object') return respond({error:'INVALID'},400);
       const {action, payload = {}} = body;
+      if (action === 'practice' || action === 'practice-check') {
+        const ip = await sha256(ipSecret + ':' + getIP(request));
+        const data = await rpc(action,ip,payload);
+        return respond(data,data.error === 'RATE_LIMIT' ? 429 : data.error ? 400 : 200);
+      }
       if (action === 'login') {
         const {account,password} = payload;
         if (typeof account !== 'string' || typeof password !== 'string' || password.length > 128)
