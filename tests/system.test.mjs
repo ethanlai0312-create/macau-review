@@ -8,12 +8,13 @@ import {formatTime} from '../src/time.js';
 const db=new PGlite();
 await db.exec('create role anon;create role authenticated;create role service_role;');
 await db.exec(readFileSync('supabase/migrations/202610200001_exam.sql','utf8'));
+await db.exec(readFileSync('supabase/practice.sql','utf8'));
 const synthetic=Array.from({length:100},(_,i)=>({id:String(i+1).padStart(3,'0'),points:1,type:'single',cn:{prompt:`Test ${i}`,options:['A','B'],explanation:'A is correct'},tw:{prompt:`Test ${i}`,options:['A','B'],explanation:'A is correct'},answer:'0'}));
 const bank=existsSync('private/bank.json')?JSON.parse(readFileSync('private/bank.json','utf8')):synthetic;
 await db.query('insert into exam_private.banks values ($1,$2,true)',['test',JSON.stringify(bank)]);
 const password='0007-Test-only',hash=await hashPassword(password);
 for(let i=1;i<=10;i++) await db.query('insert into exam_private.accounts(id,password_hash) values($1,$2)',[String(i).padStart(3,'0'),hash]);
-const rpc=async(action,token='',payload={})=>(await db.query('select public.exam_api($1,$2,$3) as result',[action,token,JSON.stringify(payload)])).rows[0].result;
+const rpc=async(action,token='',payload={})=>(await db.query(`select public.${['practice','practice-check'].includes(action)?'practice_api':'exam_api'}($1,$2,$3) as result`,[action,token,JSON.stringify(payload)])).rows[0].result;
 const handler=createHandler({rpc,allowedOrigins:['https://example.test'],ipSecret:'test-secret',getIP:()=> 'test'});
 async function request(action,payload={},token='') {
  const response=await handler(new Request('https://api.test',{method:'POST',headers:{origin:'https://example.test',authorization:`Bearer ${token}`},body:JSON.stringify({action,payload})}));
@@ -152,4 +153,28 @@ test('exact score/time/submission-time ties have stable account ordering',async(
  await db.query("update exam_private.attempts set elapsed_seconds=60,submitted_at='2026-10-20T00:00:00Z' where id=any($1::uuid[])",[ids]);
  const tied=(await rpc('leaderboard','tie006')).rows.filter(r=>['006','007'].includes(r.account));
  assert.deepEqual(tied.map(r=>r.account),['006','007']);
+});
+
+test('public practice grades each question without login or ranked writes',async()=>{
+ const before=(await db.query('select count(*) as n from exam_private.attempts')).rows[0].n;
+ const start=await request('practice');assert.equal(start.status,200);assert.equal(start.data.questions.length,100);
+ for(const q of start.data.questions){assert(!q.answer);assert(!q.cn.explanation);assert(!q.tw.explanation);}
+ for(const q of bank){
+  const checked=await request('practice-check',{bank:'test',id:q.id,answer:correctAnswers[q.id]});
+  assert.equal(checked.status,200);assert.equal(checked.data.correct,true,q.id);assert.deepEqual(checked.data.question.answer,q.answer);
+ }
+ const wrong=await request('practice-check',{bank:'test',id:bank[0].id,answer:null});assert.equal(wrong.data.correct,false);assert(wrong.data.question.cn.explanation);
+ assert.equal((await db.query('select count(*) as n from exam_private.attempts')).rows[0].n,before);
+ assert.equal((await request('submit')).status,401);assert.equal((await request('leaderboard')).status,401);
+ assert.equal((await request('practice-check',{bank:'missing',id:'001'})).status,400);
+});
+
+test('practice direct database access denied and rate limit enforced',async()=>{
+ for(const role of ['anon','authenticated']){
+  await db.exec(`set role ${role}`);
+  await assert.rejects(()=>db.query("select public.practice_api('practice','x','{}')"));
+  await db.exec('reset role');
+ }
+ await db.query("insert into exam_private.rate_limits values ('practice:limited',600,clock_timestamp())");
+ assert.equal((await rpc('practice','limited')).error,'RATE_LIMIT');
 });
