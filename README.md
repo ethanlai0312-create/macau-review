@@ -2,6 +2,10 @@
 
 面向十个指定账号的澳门地理与社会复习系统。前端部署到 GitHub Pages；认证、时间校验、评分和共享排行榜由 Supabase Edge Functions + PostgreSQL 实现。
 
+访客网站：https://ethanlai0312-create.github.io/macau-review/
+
+源码仓库：https://github.com/ethanlai0312-create/macau-review
+
 ## 使用
 
 打开已发布的 GitHub Pages 网站，用管理员分配的三位账号和对应密码登录。首次登录会开始一次练习；已有未提交记录则恢复原记录及开始时间。每次100题、每题1分，可跳题、修改答案、切换简繁体。交卷后查看成绩、解析和共享排行榜，再练习不会降低历史最佳成绩。
@@ -68,3 +72,4 @@ VITE_API_URL=https://PROJECT.supabase.co/functions/v1/exam pnpm build
 `pnpm test` 使用真正的 PostgreSQL WASM 引擎 PGlite 执行数据库迁移和评分函数，不用伪造API替代数据库评分。管理员本机有私有题库时检验实际100题；公开CI无答案库时检验100题的测试夹具，两者用途不同。
 
 具体已执行与未执行的验证见 `docs/ACCEPTANCE.md`。桌面窄屏测试不等于 Android、iOS、HarmonyOS 实机通过。
+
